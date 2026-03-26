@@ -13,6 +13,7 @@ import {
   optimizedSeating,
   generateSampleData,
   calculateConflicts,
+  flattenHalls,
 } from '../utils/seatingEngine'
 
 const ALGORITHMS = [
@@ -53,6 +54,8 @@ export default function AdminDashboard({ onLogout }) {
   const [highlightConflicts, setHighlightConflicts] = useState(true)
   const [activeTab, setActiveTab] = useState('grid') // grid | heatmap | conflicts
   const [isGenerating, setIsGenerating] = useState(false)
+  const [showSaveModal, setShowSaveModal] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
 
   // Load saved data on mount
   useEffect(() => {
@@ -61,22 +64,26 @@ export default function AdminDashboard({ onLogout }) {
       setStudents(saved.students)
       setAlgorithm(saved.algorithm || 'standard')
       // Re-generate with saved algo
-      const fn = ALGO_MAP[saved.algorithm || 'standard']
-      setHalls(fn(saved.students))
+      if (saved.halls && saved.halls.length > 0) {
+        setHalls(saved.halls)
+      } else {
+        const fn = ALGO_MAP[saved.algorithm || 'standard']
+        setHalls(fn(saved.students))
+      }
     }
   }, [])
 
   const handleDataLoaded = useCallback((data) => {
     setStudents(data)
     setHalls([])
-    saveToStorage({ students: data, algorithm })
+    saveToStorage({ students: data, algorithm, halls: [] })
   }, [algorithm])
 
   const handleSampleData = useCallback(() => {
     const sample = generateSampleData(112)
     setStudents(sample)
     setHalls([])
-    saveToStorage({ students: sample, algorithm })
+    saveToStorage({ students: sample, algorithm, halls: [] })
   }, [algorithm])
 
   const handleGenerate = useCallback(() => {
@@ -87,7 +94,7 @@ export default function AdminDashboard({ onLogout }) {
       const fn = ALGO_MAP[algorithm]
       const result = fn(students)
       setHalls(result)
-      saveToStorage({ students, algorithm })
+      saveToStorage({ students, algorithm, halls: result })
       setIsGenerating(false)
     }, 100)
   }, [students, algorithm])
@@ -99,7 +106,36 @@ export default function AdminDashboard({ onLogout }) {
     localStorage.removeItem(STORAGE_KEY)
   }, [])
 
+  const handleLogoutClick = () => {
+    if (halls.length > 0) {
+      setShowSaveModal(true)
+    } else {
+      onLogout()
+    }
+  }
+
+  const handleSaveToSQL = async () => {
+    setIsSaving(true)
+    try {
+      const flat = flattenHalls(halls)
+      const res = await fetch('http://localhost:3001/api/save-allocation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ allocations: flat }),
+      })
+      if (!res.ok) throw new Error('Failed to save to database')
+      onLogout()
+    } catch (err) {
+      alert('Error saving to SQL database: ' + err.message)
+      setIsSaving(false)
+      setShowSaveModal(false)
+    }
+  }
+
   return (
+    <div>
     <div className="min-h-screen bg-surface-950">
       {/* Background gradient */}
       <div className="fixed inset-0 pointer-events-none">
@@ -130,7 +166,7 @@ export default function AdminDashboard({ onLogout }) {
                   Clear Data
                 </button>
               )}
-              <button onClick={onLogout} className="btn-secondary text-sm px-4 py-2 border-red-500/50 text-red-300 hover:bg-red-500/20" id="logout-btn">
+              <button onClick={handleLogoutClick} className="btn-secondary text-sm px-4 py-2 border-red-500/50 text-red-300 hover:bg-red-500/20" id="logout-btn">
                 Log Out
               </button>
             </div>
@@ -292,19 +328,39 @@ export default function AdminDashboard({ onLogout }) {
               </div>
 
               {/* Active View */}
-              {activeTab === 'grid' && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {halls.map((grid, i) => (
-                    <HallGrid
-                      key={i}
-                      grid={grid}
-                      hallIndex={i}
-                      searchTerm={searchTerm}
-                      highlightConflicts={highlightConflicts}
-                    />
-                  ))}
-                </div>
-              )}
+              {activeTab === 'grid' && (() => {
+                const term = searchTerm.toLowerCase();
+                const filteredHalls = halls.map((grid, i) => ({ grid, originalIndex: i }))
+                  .filter(({ grid }) => {
+                    if (!term) return true;
+                    // Check if any student in this hall matches the search
+                    return grid.some(row => 
+                      row.some(s => s && (s.name.toLowerCase().includes(term) || s.id.toLowerCase().includes(term)))
+                    );
+                  });
+
+                if (filteredHalls.length === 0) {
+                  return (
+                    <div className="text-center py-12 text-white/40 bg-white/5 rounded-2xl border border-white/10">
+                      <p>No students match your search.</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {filteredHalls.map(({ grid, originalIndex }) => (
+                      <HallGrid
+                        key={originalIndex}
+                        grid={grid}
+                        hallIndex={originalIndex}
+                        searchTerm={searchTerm}
+                        highlightConflicts={highlightConflicts}
+                      />
+                    ))}
+                  </div>
+                );
+              })()}
 
               {activeTab === 'heatmap' && <Heatmap halls={halls} />}
               {activeTab === 'conflicts' && <ConflictPanel halls={halls} />}
@@ -320,6 +376,50 @@ export default function AdminDashboard({ onLogout }) {
           </div>
         </footer>
       </div>
+    </div>
+      
+      {/* Save to SQL Modal */}
+      {showSaveModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-surface-900 border border-white/10 p-6 rounded-2xl max-w-sm w-full shadow-2xl animate-in zoom-in-95">
+            <h3 className="text-xl font-bold text-white mb-2">Save to Database?</h3>
+            <p className="text-sm text-white/50 mb-6">
+              Would you like to securely push this seating arrangement to the SQL Database before logging out? Students will immediately see their assigned seats.
+            </p>
+            <div className="flex flex-col gap-3">
+              <button 
+                onClick={handleSaveToSQL} 
+                disabled={isSaving}
+                className="btn-primary w-full py-3 flex justify-center items-center gap-2"
+              >
+                {isSaving ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Saving to SQL...
+                  </>
+                ) : 'Yes, Save to SQL & Log Out'}
+              </button>
+              <button 
+                onClick={onLogout} 
+                disabled={isSaving}
+                className="btn-secondary w-full py-3"
+              >
+                No, Just Log Out
+              </button>
+              <button 
+                onClick={() => setShowSaveModal(false)} 
+                disabled={isSaving}
+                className="text-white/40 hover:text-white text-sm py-2 mt-2"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

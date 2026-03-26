@@ -1,23 +1,37 @@
-import { useMemo } from 'react';
-import { flattenHalls } from '../utils/seatingEngine';
+import { useState, useEffect } from 'react';
 
 export default function StudentDashboard({ user, onLogout }) {
-  // Load seating arrangement
-  const seatData = useMemo(() => {
-    try {
-      const raw = localStorage.getItem('examseat_pro_data');
-      if (raw) {
-        const data = JSON.parse(raw);
-        // We need the raw student list to get halls array or we need to recalculate
-        // But the data stored in App uses ALGO_MAP. To keep it simple, we need App to store the calculated halls.
-        if (data.halls) {
-          const flat = flattenHalls(data.halls);
-          return flat.find(s => s.id === user.id);
-        }
-      }
-    } catch { /* ignore */ }
-    return null;
+  const [seatData, setSeatData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Fetch seating arrangement from Real-time SQL Database
+  useEffect(() => {
+    fetch(`http://localhost:3001/api/allocation/${user.id}`)
+      .then(res => {
+        if (!res.ok) throw new Error('Not allocated');
+        return res.json();
+      })
+      .then(data => {
+        setSeatData(data);
+      })
+      .catch(err => {
+        setSeatData(null);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   }, [user.id]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-100 to-yellow-200 flex items-center justify-center">
+        <svg className="animate-spin w-10 h-10 text-orange-500" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-100 to-yellow-200 text-slate-800 p-6 font-sans">

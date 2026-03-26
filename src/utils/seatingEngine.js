@@ -80,7 +80,7 @@ function hasConflict(grid, r, c, student) {
   return false;
 }
 
-function assignToGrid(students, hallIndex) {
+function assignToGrid(students, hallIndex, strategy = 'greedy') {
   const grid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
   const order = snakeOrder(ROWS, COLS);
   let unassigned = [...students];
@@ -89,17 +89,50 @@ function assignToGrid(students, hallIndex) {
     if (unassigned.length === 0) break;
     const { row, col } = order[i];
     
-    // Find first student with no conflict
-    let bestIndex = -1;
+    // Calculate dept frequencies
+    const freq = {};
+    for (const s of unassigned) {
+      freq[s.dept] = (freq[s.dept] || 0) + 1;
+    }
+
+    // Find valid candidates
+    const validIndices = [];
     for (let j = 0; j < unassigned.length; j++) {
       if (!hasConflict(grid, row, col, unassigned[j])) {
-        bestIndex = j;
-        break;
+        validIndices.push(j);
       }
     }
     
-    // If all conflict, just pick the first one
-    if (bestIndex === -1) bestIndex = 0;
+    let bestIndex = -1;
+
+    if (strategy === 'greedy') {
+      if (validIndices.length > 0) {
+        // Enforce Year-wise separation (e.g. 2nd years seated before 3rd years)
+        const minYear = Math.min(...validIndices.map(idx => unassigned[idx].year));
+        const validForMinYear = validIndices.filter(idx => unassigned[idx].year === minYear);
+        
+        // Among the lowest year cohort, pick the most abundant department to prevent end-of-cohort clustering
+        bestIndex = validForMinYear.reduce((best, curr) => freq[unassigned[curr].dept] > freq[unassigned[best].dept] ? curr : best, validForMinYear[0]);
+      } else {
+        // Conflict unavoidable: fallback to Year-wise order, then abundant department
+        const minYear = Math.min(...unassigned.map(s => s.year));
+        const unavoidableForMinYear = [];
+        for (let j = 0; j < unassigned.length; j++) {
+          if (unassigned[j].year === minYear) unavoidableForMinYear.push(j);
+        }
+        
+        bestIndex = unavoidableForMinYear.reduce((best, curr) => freq[unassigned[curr].dept] > freq[unassigned[best].dept] ? curr : best, unavoidableForMinYear[0]);
+      }
+    } else if (strategy === 'random') {
+      if (validIndices.length > 0) {
+        bestIndex = validIndices[Math.floor(Math.random() * validIndices.length)];
+      } else {
+        bestIndex = Math.floor(Math.random() * unassigned.length);
+      }
+    } else {
+      // 'first' strategy (preserves precise ordering like Marks)
+      bestIndex = validIndices.length > 0 ? validIndices[0] : 0;
+    }
     
     const student = unassigned.splice(bestIndex, 1)[0];
     
@@ -206,7 +239,7 @@ export function standardSeating(students) {
   });
 
   const halls = splitIntoHalls(allHallStudents);
-  return halls.map((hallStudents, i) => assignToGrid(hallStudents, i));
+  return halls.map((hallStudents, i) => assignToGrid(hallStudents, i, 'greedy'));
 }
 
 // ─── ALGORITHM 2: Marks Based ───
@@ -218,7 +251,7 @@ export function marksBasedSeating(students) {
   return halls.map((hallStudents, i) => {
     const deptGroups = groupByDept(hallStudents);
     const interleaved = roundRobinInterleave(deptGroups);
-    return assignToGrid(interleaved, i);
+    return assignToGrid(interleaved, i, 'first');
   });
 }
 
@@ -246,7 +279,7 @@ export function randomSeating(students) {
   });
 
   const halls = splitIntoHalls(allHallStudents);
-  return halls.map((hallStudents, i) => assignToGrid(hallStudents, i));
+  return halls.map((hallStudents, i) => assignToGrid(hallStudents, i, 'random'));
 }
 
 // ─── ALGORITHM 4: Optimized (AI-Style) ───
@@ -282,10 +315,15 @@ export function optimizedSeating(students) {
   return initialHalls.map((grid) => {
     let bestGrid = deepCopyGrid(grid);
     let bestScore = scoreGrid(bestGrid);
-    const MAX_ITERATIONS = 500;
+    
+    // Supercharged AI: Up to 10000 iterations per hall, 
+    // stop early if perfect score (0 conflicts) is reached
+    const MAX_ITERATIONS = 10000;
     let noImprovement = 0;
 
-    for (let iter = 0; iter < MAX_ITERATIONS && noImprovement < 80; iter++) {
+    for (let iter = 0; iter < MAX_ITERATIONS && noImprovement < 1000; iter++) {
+      if (bestScore === 0) break; // PERFECT seating achieved
+
       const newGrid = deepCopyGrid(bestGrid);
 
       // Find occupied positions
@@ -305,11 +343,12 @@ export function optimizedSeating(students) {
         const p1 = occupied[i1];
         const p2 = occupied[i2];
 
+        // Swap the actual student objects
         const temp = newGrid[p1.r][p1.c];
         newGrid[p1.r][p1.c] = newGrid[p2.r][p2.c];
         newGrid[p2.r][p2.c] = temp;
 
-        // Update seat info
+        // Update seat coordinate info in object
         if (newGrid[p1.r][p1.c]) {
           newGrid[p1.r][p1.c].row = p1.r + 1;
           newGrid[p1.r][p1.c].col = p1.c + 1;
@@ -321,10 +360,12 @@ export function optimizedSeating(students) {
       }
 
       const newScore = scoreGrid(newGrid);
-      if (newScore < bestScore) {
+      
+      // Accept better OR equal score occasionally to traverse plateaus (Simulated Annealing light)
+      if (newScore < bestScore || (newScore === bestScore && Math.random() < 0.1)) {
         bestGrid = newGrid;
+        if (newScore < bestScore) noImprovement = 0;
         bestScore = newScore;
-        noImprovement = 0;
       } else {
         noImprovement++;
       }
@@ -422,6 +463,7 @@ export function flattenHalls(halls) {
             year: s.year,
             marks: s.marks,
             id: s.id,
+            sno: s.sno,
           });
         }
       }

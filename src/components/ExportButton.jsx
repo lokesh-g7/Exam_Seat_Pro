@@ -3,10 +3,23 @@ import { flattenHalls } from '../utils/seatingEngine'
 export default function ExportButton({ halls }) {
   function exportCSV() {
     const rows = flattenHalls(halls)
-    const headers = ['Hall', 'Seat', 'Row', 'Column', 'Name', 'Dept', 'Year', 'Marks', 'ID']
+    
+    // Sort strictly by original input S.No. as requested by user
+    rows.sort((a, b) => {
+      const numA = parseInt(a.sno, 10);
+      const numB = parseInt(b.sno, 10);
+      if (!isNaN(numA) && !isNaN(numB)) {
+        return numA - numB;
+      }
+      return 0; // Fallback if S.No is not a number
+    });
+
+    const headers = ['S. No.', 'Reg. No.', 'Name', 'Dept', 'Year', 'Marks', 'Hall', 'Seat', 'Row', 'Column']
     const csvLines = [
       headers.join(','),
-      ...rows.map(r => [r.hall, r.seat, r.row, r.col, r.name, r.dept, r.year, r.marks, r.id].join(','))
+      ...rows.map((r, i) => [
+        r.sno || i + 1, r.id, `"${r.name}"`, r.dept, r.year, r.marks, r.hall, r.seat, r.row, r.col
+      ].join(','))
     ]
     const blob = new Blob([csvLines.join('\n')], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
